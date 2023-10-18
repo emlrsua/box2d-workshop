@@ -15,17 +15,32 @@
 
 #include "box2d/box2d.h"
 
-// GLFW main window pointer
-GLFWwindow* g_mainWindow = nullptr;
+
+GLFWwindow* g_mainWindow;
 b2World* g_world;
 b2Body* g_shipBody;
+std::vector<b2Body*> g_bodiesToDestroy;
+
 
 const float PIXELS_PER_UNIT = 20.0f;
-const uint16 CATEGORY_SPACESHIP = 0x0001;
-const uint16 CATEGORY_ASTEROID = 0x0002;
-const uint16 MASK_SPACESHIP = CATEGORY_ASTEROID;
-const uint16 MASK_ASTEROID = CATEGORY_SPACESHIP;
 
+// The following will make it possible for asteroids to pass through each other
+// just like in the classic arcade game. The spaceship will still collide with
+// the asteroids, but this should lead to the immediate destruction of the ship.
+// Projectiles will also collide with asteroids, and this should trigger the
+// destruction of the projectile and the break up or destruction of the asteroid.
+//
+const uint16 CATEGORY_SPACESHIP = 0x0001;
+const uint16 CATEGORY_PROJECTILE = 0x0002;
+const uint16 CATEGORY_ASTEROID = 0x0004;
+const uint16 CATEGORY_MEDIUM = 0x0008;
+const uint16 CATEGORY_SMALL = 0x0010;
+const uint16 MASK_PROJECTILE = CATEGORY_ASTEROID;
+const uint16 MASK_SPACESHIP = CATEGORY_ASTEROID;
+const uint16 MASK_ASTEROID = CATEGORY_SPACESHIP | CATEGORY_PROJECTILE;
+
+// We can't rely on the GLFW_REPEAT key event to handle smooth action when
+// holding a key down. The flags make for a better user experience.
 bool g_rotateLeft = false;
 bool g_rotateRight = false;
 bool g_accelerate = false;
@@ -37,16 +52,17 @@ double GenerateRandom(float lower, float upper)
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> dis(lower, upper);
     double random_value = dis(gen);
-    // std::cout << "Random value: " << random_value << std::endl;
     return random_value;
 }
 
 b2Vec2 GenerateRandomAsteroidPos()
 {
-    // Window width and height
+    // Window width and height in Box2D terms, estimated.
     int width = 70;
     int height = 50;
 
+    // Make asteroids appear near the edge of the screen.
+    //
     double large = GenerateRandom(0.0f, height);
     double small = GenerateRandom(0.0f, 10.0f);
     int side = static_cast<int>(std::ceil(GenerateRandom(0.0f, 4.0f)));
@@ -84,71 +100,231 @@ b2Vec2 GenerateRandomAsteroidPos()
     return vec;
 }
 
+void CreateStartingAsteroid()
+{
+    b2BodyDef asteroidBodyDef;
+    asteroidBodyDef.type = b2_dynamicBody;
+    b2Vec2 randomPos = GenerateRandomAsteroidPos();
+    asteroidBodyDef.position.Set(randomPos.x, randomPos.y);
+    b2Body* asteroidBody = g_world->CreateBody(&asteroidBodyDef);
+
+    b2PolygonShape box_shape;
+    box_shape.SetAsBox(3.0f, 3.0f); // TODO: Improve shape
+
+    b2FixtureDef asteroidFixture;
+    asteroidFixture.shape = &box_shape;
+    asteroidFixture.density = 1.0f;
+    asteroidFixture.filter.categoryBits = CATEGORY_ASTEROID;
+    asteroidFixture.filter.maskBits = MASK_ASTEROID;
+    asteroidBody->CreateFixture(&asteroidFixture);
+
+    // Starting asteroids have a random direction of motion
+    //
+    float desiredVelocity = 4.0f; // Adjust as needed
+    float angle = GenerateRandom(0, 2 * b2_pi); // Radians are based on 2*pi
+    b2Vec2 directionOfMotion(cos(angle), sin(angle));
+    directionOfMotion *= desiredVelocity;
+    asteroidBody->SetLinearVelocity(directionOfMotion);
+    //std::cout << "Vel: " << x_speed << ", " << y_speed << ": " << x_direction << std::endl;
+}
+
+class MyContactListener : public b2ContactListener
+{
+    void BeginContact(b2Contact* contact) override
+    {
+        b2Fixture* fixtureA = contact->GetFixtureA();
+        b2Fixture* fixtureB = contact->GetFixtureB();
+        b2Body* bodyA = fixtureA->GetBody();
+        b2Body* bodyB = fixtureB->GetBody();
+        uint16 categoryOfA = fixtureA->GetFilterData().categoryBits;
+        uint16 categoryOfB = fixtureB->GetFilterData().categoryBits;
+
+        // Both the projectile and the object hit will be scheduled for destruction.
+        //
+        g_bodiesToDestroy.push_back(bodyA);
+        g_bodiesToDestroy.push_back(bodyB);
+    }
+};
+
+class Projectile
+{
+    b2Body* body = nullptr;
+    float distanceTraveled = 0.0f;
+    const float maxRange = 50.0f; // Define your desired max range
+
+public:
+    Projectile(b2World* world, b2Vec2 position, b2Vec2 velocity)
+    {
+        b2BodyDef bodyDef;
+        bodyDef.type = b2_dynamicBody;
+        bodyDef.position = position;
+        body = world->CreateBody(&bodyDef);
+
+        b2CircleShape shape;
+        shape.m_radius = 0.2f; // Adjust based on desired size
+
+        b2FixtureDef projectileFixture;
+        projectileFixture.shape = &shape;
+        projectileFixture.density = 1.0f;
+        projectileFixture.filter.categoryBits = CATEGORY_PROJECTILE;
+        projectileFixture.filter.maskBits = MASK_PROJECTILE;
+        body->CreateFixture(&projectileFixture);
+        body->SetLinearVelocity(velocity);
+    }
+};
+
+std::vector<Projectile*> g_activeProjectiles;
+
+void OnShootKeyPressed()
+{
+    float angle = g_shipBody->GetAngle();
+    angle += b2_pi / 2; // Adjust angle by 90 degrees
+    b2Vec2 directionOfFire(cos(angle), sin(angle));
+
+    // Assuming the spaceship's nose is at its center for this example
+    b2Vec2 launchPosition = g_shipBody->GetPosition() + directionOfFire;
+
+    float projectileSpeed = 40.0f; // Adjust as needed
+    directionOfFire *= projectileSpeed;
+
+    // Create the projectile
+    Projectile* newProjectile = new Projectile(g_world, launchPosition, directionOfFire);
+    g_activeProjectiles.push_back(newProjectile);
+}
+
+
+void RotateShip(float amount)
+{
+    float adjustedAngle = g_shipBody->GetAngle() + amount;
+    g_shipBody->SetTransform(g_shipBody->GetPosition(), adjustedAngle);
+    std::cout << "Rotate to " << adjustedAngle << std::endl;
+}
+
+void AccelerateSpaceship()
+{
+    // Calculate the force of accelation with a diminishing return. The faster
+    // the ship goes, the less able the ship's propulsion is to accelerate the
+    // ship. This is to prevent unlimited acceleration in the game.
+    //
+    float currentVelocityMagnitude = g_shipBody->GetLinearVelocity().Length();
+    float maxVelocity = 50.0f; // Define a maximum reasonable velocity for your spaceship.
+    float adjustmentFactor = 1.0f - (currentVelocityMagnitude / maxVelocity);
+    float baseMagnitude = 300.0f; // Define this value based on desired acceleration.
+    float adjustedMagnitude = baseMagnitude * adjustmentFactor;
+
+    // Calculate the direction of acceleration.
+    //
+    float angle = g_shipBody->GetAngle();
+    angle += b2_pi / 2; // Adjust angle by 90 degrees
+    b2Vec2 forceDirection(cos(angle), sin(angle));
+
+    // Apply the magnitude of acceleration to the direction of acceleration.
+    //
+    forceDirection *= adjustedMagnitude;
+    g_shipBody->ApplyForceToCenter(forceDirection, true);
+    std::cout << "Current velocity: " << currentVelocityMagnitude << ", Accelerate by " << adjustedMagnitude << std::endl;
+}
+
+void WorldWraparound()
+{
+    for (b2Body* b = g_world->GetBodyList(); b; b = b->GetNext())
+    {
+        b2Vec2 pos = b->GetPosition();
+        bool wrapped = false;
+
+        // Check outside right and left borders
+        if (pos.x > (g_camera.m_width / PIXELS_PER_UNIT) / 2.0f)
+        {
+            pos.x = -(g_camera.m_width / PIXELS_PER_UNIT) / 2;
+            wrapped = true;
+        }
+        else if (pos.x < -(g_camera.m_width / PIXELS_PER_UNIT) / 2.0f)
+        {
+            pos.x = (g_camera.m_width / PIXELS_PER_UNIT) / 2;
+            wrapped = true;
+        }
+
+        // Check outside top and bottom borders
+        if (pos.y > g_camera.m_height / PIXELS_PER_UNIT)
+        {
+            pos.y = 0;
+            wrapped = true;
+        }
+        else if (pos.y < 0)
+        {
+            pos.y = g_camera.m_height / PIXELS_PER_UNIT;
+            wrapped = true;
+        }
+
+        // Adjust position
+        if (wrapped)
+        {
+            b->SetTransform(pos, b->GetAngle());
+        }
+    }
+}
+
+void RandomTeleport()
+{
+    double x = GenerateRandom(-35.0f, 35.0f);
+    double y = GenerateRandom(0.0f, 50.0f);
+    b2Vec2 newPosition(x, y);
+    g_shipBody->SetTransform(newPosition, g_shipBody->GetAngle());
+    std::cout << "Random teleport to " << x << ", " << y << std::endl;
+}
+
 void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-    // Left, right to rotate spaceship, up arrow for thrust, space to fire projectiles
-    // Choose a key for random teleport
-
-    if (action == GLFW_RELEASE)
+    // Left, right keys to rotate spaceship, up arrow for thrust, Space bar to fire projectiles,
+    // Right-Ctrl key for emergency random teleport.
+    //
+    switch (key)
     {
-        std::cout << "Release key" << std::endl;
-        switch (key)
+    case GLFW_KEY_LEFT:
+        if (action == GLFW_PRESS)
         {
-        case GLFW_KEY_LEFT:
-            std::cout << "Stop rotate counterclockwise" << std::endl;
-            g_rotateLeft = false;
-            break;
-        case GLFW_KEY_RIGHT:
-            std::cout << "Stop rotate clockwise" << std::endl;
-            g_rotateRight = false;
-            break;
-        case GLFW_KEY_UP:
-            std::cout << "Accelerate" << std::endl;
-            g_accelerate = false;
-            break;
-        default:
-            break;
-        }
-    }
-    else if (action == GLFW_REPEAT)
-    {
-        std::cout << "Hold down key" << std::endl;
-    }
-    else if (action == GLFW_PRESS)
-    {
-        switch (key)
-        {
-        case GLFW_KEY_LEFT:
-            std::cout << "Rotate counterclockwise" << std::endl;
             g_rotateLeft = true;
-            break;
-        case GLFW_KEY_RIGHT:
-            std::cout << "Rotate clockwise" << std::endl;
-            g_rotateRight = true;
-            break;
-        case GLFW_KEY_UP:
-            std::cout << "Accelerate" << std::endl;
-            g_accelerate = true;
-            break;
-        case GLFW_KEY_SPACE:
-            std::cout << "Fire projectile" << std::endl;
-            break;
-        case GLFW_KEY_RIGHT_CONTROL:
-            std::cout << "Random teleport" << std::endl;
-            {
-                double x = GenerateRandom(-35.0f, 35.0f);
-                double y = GenerateRandom(0.0f, 50.0f);
-                b2Vec2 newPosition(x, y);
-                g_shipBody->SetTransform(newPosition, g_shipBody->GetAngle());
-            }
-            break;
-        default:
-            break;
         }
+        else if (action == GLFW_RELEASE)
+        {
+            g_rotateLeft = false;
+        }
+        break;
+    case GLFW_KEY_RIGHT:
+        if (action == GLFW_PRESS)
+        {
+            g_rotateRight = true;
+        }
+        else if (action == GLFW_RELEASE)
+        {
+            g_rotateRight = false;
+        }
+        break;
+    case GLFW_KEY_UP:
+        if (action == GLFW_PRESS)
+        {
+            g_accelerate = true;
+        }
+        else if (action == GLFW_RELEASE)
+        {
+            g_accelerate = false;
+        }
+        break;
+    case GLFW_KEY_SPACE:
+        if (action == GLFW_PRESS)
+        {
+            OnShootKeyPressed();  // This creates a new Projectile.
+        }
+        break;
+    case GLFW_KEY_RIGHT_CONTROL:
+        if (action == GLFW_PRESS)
+        {
+            RandomTeleport();
+        }
+        break;
+    default:
+        break;
     }
-
-    // code for keys here https://www.glfw.org/docs/3.3/group__keys.html
-    // and modifiers https://www.glfw.org/docs/3.3/group__mods.html
 }
 
 void MouseMotionCallback(GLFWwindow*, double xd, double yd)
@@ -173,15 +349,15 @@ void MouseButtonCallback(GLFWwindow* window, int32 button, int32 action, int32 m
 
 }
 
-void CreateSpaceship(float x, float y)
+void CreateSpaceship()
 {
     b2BodyDef shipBodyDef;
-    shipBodyDef.type = b2_dynamicBody;
-    shipBodyDef.position.Set(0.0f, 20.0f); // starting position
+    shipBodyDef.type = b2_dynamicBody; // the ship is a movable object
+    shipBodyDef.position.Set(0.0f, 20.0f); // starting position is roughly in the center of the screen
     g_shipBody = g_world->CreateBody(&shipBodyDef);
 
-    b2PolygonShape shipShape;
     // Define the vertices for the triangle (representing the ship)
+    b2PolygonShape shipShape;
     b2Vec2 vertices[3];
     vertices[0].Set(-1, -2);
     vertices[1].Set(1, -2);
@@ -190,43 +366,47 @@ void CreateSpaceship(float x, float y)
 
     b2FixtureDef shipFixture;
     shipFixture.shape = &shipShape;
-    shipFixture.density = 1.0f;
+    shipFixture.density = 1.0f; // determines the mass of the ship
     shipFixture.filter.categoryBits = CATEGORY_SPACESHIP;
     shipFixture.filter.maskBits = MASK_SPACESHIP;
     g_shipBody->CreateFixture(&shipFixture);
-    g_shipBody->SetLinearDamping(0.5f);
+    g_shipBody->SetLinearDamping(0.5f); // Creates "drag" for the ship
 }
 
-void CreateAsteroid(float x, float y, float size)
+void DestroyBodies()
 {
-    b2BodyDef asteroidBodyDef;
-    asteroidBodyDef.type = b2_dynamicBody;
-    asteroidBodyDef.position.Set(x, y);
+    for (b2Body* body : g_bodiesToDestroy)
+    {
+        if (body == nullptr || !body->IsEnabled() || body->GetFixtureList() == nullptr) {
+            continue;
+        }
 
-    b2Body* asteroidBody = g_world->CreateBody(&asteroidBodyDef);
+        uint16 body_category = body->GetFixtureList()[0].GetFilterData().categoryBits;
+        std::cout << "Detected destroy: " << body_category << std::endl;
+        if (body_category == CATEGORY_ASTEROID)
+        {
+            std::cout << "Detected destroy large asteroid" << std::endl;
+            // Large asteroid becomes two medium asteroids.
+        }
+        else if (body_category & CATEGORY_MEDIUM)
+        {
+            std::cout << "Detected destroy medium asteroid" << std::endl;
+            // Medium asteroid becomes two small asteroids.
+        }
+        else if (body_category & CATEGORY_SMALL)
+        {
+            std::cout << "Detected destroy small asteroid" << std::endl;
+            // Small asteroid is simply destroyed.
+        }
 
-    b2PolygonShape box_shape;
-    box_shape.SetAsBox(size, size);
-
-    b2FixtureDef asteroidFixture;
-    asteroidFixture.shape = &box_shape;
-    asteroidFixture.density = 1.0f;
-    asteroidFixture.filter.categoryBits = CATEGORY_ASTEROID;
-    asteroidFixture.filter.maskBits = MASK_ASTEROID;
-    asteroidBody->CreateFixture(&asteroidFixture);
-
-    double y_speed = GenerateRandom(0.0f, 8.0f) - 4.0f;
-    double x_direction = GenerateRandom(0.0f, 2.0f) - 1.0f > 0.0f ? 1 : -1;
-    double x_speed = (4.0f - fabs(y_speed)) * x_direction;
-    b2Vec2 initialVelocity(x_speed, y_speed); // Define velocity vector
-    asteroidBody->SetLinearVelocity(initialVelocity);
-    std::cout << "Vel: " << x_speed << ", " << y_speed << ": " << x_direction << std::endl;
+        std::cout << "Destroying body" << std::endl;
+        g_world->DestroyBody(body);
+    }
+    g_bodiesToDestroy.clear(); // Clear the list for the next frame.
 }
-
 
 int main()
 {
-
     // glfw initialization things
     if (glfwInit() == 0) {
         fprintf(stderr, "Failed to initialize GLFW\n");
@@ -251,9 +431,8 @@ int main()
     // Load OpenGL functions using glad
     int version = gladLoadGL(glfwGetProcAddress);
 
-    // Setup Box2D world and with some gravity
-    b2Vec2 gravity;
-    //gravity.Set(0.0f, -10.0f);
+    // Set up outer space with no gravity
+    b2Vec2 gravity{};
     gravity.Set(0.0f, 0.0f);
     g_world = new b2World(gravity);
 
@@ -263,47 +442,16 @@ int main()
     g_world->SetDebugDraw(&g_debugDraw);
     CreateUI(g_mainWindow, 20.0f /* font size in pixels */);
 
+    CreateSpaceship();
+    CreateStartingAsteroid();
+    CreateStartingAsteroid();
+    CreateStartingAsteroid();
+    CreateStartingAsteroid();
 
-    // Some starter objects are created here, such as the ground
-    /* b2Body* ground;
-    b2EdgeShape ground_shape;
-    ground_shape.SetTwoSided(b2Vec2(-40.0f, 0.0f), b2Vec2(40.0f, 0.0f));
-    b2BodyDef ground_bd;
-    ground = g_world->CreateBody(&ground_bd);
-    ground->CreateFixture(&ground_shape, 0.0f);
-
-    b2Body* box;
-    b2PolygonShape box_shape;
-    box_shape.SetAsBox(1.0f, 1.0f);
-    b2FixtureDef box_fd;
-    box_fd.shape = &box_shape;
-    box_fd.density = 20.0f;
-    box_fd.friction = 0.1f;
-    b2BodyDef box_bd;
-    box_bd.type = b2_dynamicBody;
-    box_bd.position.Set(-5.0f, 11.25f);
-    box = g_world->CreateBody(&box_bd);
-    box->CreateFixture(&box_fd);*/
-
-    // Create Spaceship
-
-    CreateSpaceship(0.0f, 0.0f);
-
-    // Create Asteroids
-
-    b2Vec2 v1 = GenerateRandomAsteroidPos(); 
-    CreateAsteroid(v1.x, v1.y, 3.0f);
-
-    b2Vec2 v2 = GenerateRandomAsteroidPos();
-    CreateAsteroid(v2.x, v2.y, 3.0f);
-
-    b2Vec2 v3 = GenerateRandomAsteroidPos();
-    CreateAsteroid(v3.x, v3.y, 3.0f);
-
-    b2Vec2 v4 = GenerateRandomAsteroidPos();
-    CreateAsteroid(v4.x, v4.y, 3.0f);
-
+    // Body collision detection.
     //
+    MyContactListener myContactListenerInstance;
+    g_world->SetContactListener(&myContactListenerInstance);
 
     // This is the color of our background in RGB components
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -350,76 +498,29 @@ int main()
 
         if (g_rotateLeft)
         {
-            g_shipBody->SetTransform(g_shipBody->GetPosition(), g_shipBody->GetAngle() + 0.1f);
+            RotateShip(0.1f);
         }
 
         if (g_rotateRight)
         {
-            g_shipBody->SetTransform(g_shipBody->GetPosition(), g_shipBody->GetAngle() - 0.1f);
+            RotateShip(-0.1f);
         }
 
         if (g_accelerate)
         {
-            // Calculate the force of accelation with a diminishing return. The faster
-            // the ship goes, the less able the ship's propulsion is to accelerate the
-            // ship. This is to prevent unlimited acceleration in the game.
-            //
-            float currentVelocityMagnitude = g_shipBody->GetLinearVelocity().Length();
-            float maxVelocity = 50.0f; // Define a maximum reasonable velocity for your spaceship.
-            float adjustmentFactor = 1.0f - (currentVelocityMagnitude / maxVelocity);
-            float baseMagnitude = 80.0f; // Define this value based on desired acceleration.
-            float adjustedMagnitude = baseMagnitude * adjustmentFactor;
-
-            // Calculate the direction of acceleration.
-            //
-            float angle = g_shipBody->GetAngle();
-            angle += b2_pi / 2; // Adjust angle by 90 degrees
-            b2Vec2 forceDirection(cos(angle), sin(angle));
-
-            // Apply the magnitude of acceleration to the direction of acceleration.
-            //
-            forceDirection *= adjustedMagnitude;
-            g_shipBody->ApplyForceToCenter(forceDirection, true);
+            AccelerateSpaceship();
         }
 
-        // World wrap-around
-        for (b2Body* b = g_world->GetBodyList(); b; b = b->GetNext())
-        {
-            b2Vec2 pos = b->GetPosition();
-            bool wrapped = false;
-
-            // Check outside right and left borders
-            if (pos.x > (g_camera.m_width / PIXELS_PER_UNIT) / 2.0f)
-            {
-                pos.x = -(g_camera.m_width / PIXELS_PER_UNIT) / 2;
-                wrapped = true;
-            }
-            else if (pos.x < -(g_camera.m_width / PIXELS_PER_UNIT) / 2.0f)
-            {
-                pos.x = (g_camera.m_width / PIXELS_PER_UNIT) / 2;
-                wrapped = true;
-            }
-
-            // Check outside top and bottom borders
-            if (pos.y > g_camera.m_height / PIXELS_PER_UNIT)
-            {
-                pos.y = 0;
-                wrapped = true;
-            }
-            else if (pos.y < 0)
-            {
-                pos.y = g_camera.m_height / PIXELS_PER_UNIT;
-                wrapped = true;
-            }
-
-            // Adjust position
-            if (wrapped)
-            {
-                b->SetTransform(pos, b->GetAngle());
-            }
-        }
+        // Destroy any bodies that should be destroyed, such as asteroids.
+        //
+        DestroyBodies();
+ 
+        // When objects reach one side of the screen, they should "teleport" to the other side
+        //
+        WorldWraparound();
 
         // Render everything on the screen
+        //
         g_world->DebugDraw();
         g_debugDraw.Flush();
         ImGui::Render();
@@ -428,10 +529,12 @@ int main()
 
         // Process events (mouse and keyboard) and call the functions we
         // registered before.
+        //
         glfwPollEvents();
 
         // Throttle to cap at 60 FPS. Which means if it's going to be past
         // 60FPS, sleeps a while instead of doing more frames.
+        //
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
         std::chrono::duration<double> target(1.0 / 60.0);
         std::chrono::duration<double> timeUsed = t2 - t1;
@@ -444,8 +547,8 @@ int main()
         frameTime = t3 - t1;
 
         // Compute the sleep adjustment using a low pass filter
+        //
         sleepAdjust = 0.9 * sleepAdjust + 0.1 * (target - frameTime);
-
     }
 
     // Terminate the program if it reaches here
