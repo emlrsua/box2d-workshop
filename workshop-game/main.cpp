@@ -86,7 +86,7 @@ float GenerateRandomDirection()
 
 class Projectile
 {
-public:
+public: 
     b2Body* body = nullptr;
     float distanceTraveled = 0.0f;
     const float maxRange = 25.0f;
