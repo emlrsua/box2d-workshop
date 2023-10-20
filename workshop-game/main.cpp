@@ -132,12 +132,8 @@ class MyContactListener : public b2ContactListener
 {
     void BeginContact(b2Contact* contact) override
     {
-        b2Fixture* fixtureA = contact->GetFixtureA();
-        b2Fixture* fixtureB = contact->GetFixtureB();
-        b2Body* bodyA = fixtureA->GetBody();
-        b2Body* bodyB = fixtureB->GetBody();
-        uint16 categoryOfA = fixtureA->GetFilterData().categoryBits;
-        uint16 categoryOfB = fixtureB->GetFilterData().categoryBits;
+        b2Body* bodyA = contact->GetFixtureA()->GetBody();
+        b2Body* bodyB = contact->GetFixtureB()->GetBody();
 
         // Both the projectile and the object hit will be scheduled for destruction.
         //
@@ -346,7 +342,6 @@ void MouseButtonCallback(GLFWwindow* window, int32 button, int32 action, int32 m
     b2Vec2 ps((float)xd, (float)yd);
     // now convert this position to Box2D world coordinates
     b2Vec2 pw = g_camera.ConvertScreenToWorld(ps);
-
 }
 
 void CreateSpaceship()
@@ -452,6 +447,7 @@ int main()
     //
     MyContactListener myContactListenerInstance;
     g_world->SetContactListener(&myContactListenerInstance);
+
 
     // This is the color of our background in RGB components
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
