@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <chrono>
 #include <thread>
+#include <sstream>
 
 #include "imgui/imgui.h"
 #include "imgui_impl_glfw_game.h"
@@ -19,9 +20,13 @@
 
 GLFWwindow* g_mainWindow;
 b2World* g_world;
-b2Body* g_shipBody;
-b2Body* g_destroyedShipBody;
-std::unordered_set<b2Body*> g_bodiesToDestroy;
+b2Body* g_shipBody;  // The active player ship body.
+b2Body* g_destroyedShipBody;  // A destroyed player ship body.
+std::unordered_set<b2Body*> g_bodiesToDestroy;  // Keep a unique set of bodies to destroy.
+int g_score = 0;  // The player score starts at zero and hopefully will increase.
+int g_lives = 3;  // Three lives to begin with. This can go up or down!
+int g_wait_counter = 0;  // Let the game run but wait until next phase to do something.
+bool g_gameOver = false;
 
 const float PIXELS_PER_UNIT = 20.0f;
 float timeStep = 60 > 0.0f ? 1.0f / 60 : float(0.0f);
@@ -34,6 +39,7 @@ bool g_rotateRight = false;
 bool g_accelerate = false;
 bool g_teleport = false;
 bool g_fireProjectile = false;
+bool g_lifeLost = false;
 
 // The type of game entity.
 //
@@ -78,6 +84,21 @@ float GenerateRandom(float lower, float upper)
 float GenerateRandomDirection()
 {
     return GenerateRandom(0, 2 * b2_pi);  // Random direction in radians. 0 to 2*pi.
+}
+
+void UpdateScoreAndLives(int scoreToAdd)
+{
+    // TODO: If score breaks another 10000 points, add a life to the player.
+    int oldScore = g_score;
+    g_score += scoreToAdd;
+    if (oldScore / 10000 < g_score / 10000)
+        ++g_lives;
+}
+
+void LoseLife()
+{
+    --g_lives;
+    g_lifeLost = true;
 }
 
 //
@@ -386,12 +407,13 @@ void CreateDestroyedSpaceship()
     g_destroyedShipBody = g_world->CreateBody(&bodyDef);
 
     b2CircleShape shape;
-    shape.m_radius = 0.0f; // Adjust based on desired size
+    shape.m_radius = 0.0f; // Invisible fixture.
 
-    b2FixtureDef projectileFixture;
-    projectileFixture.shape = &shape;
-    projectileFixture.filter.categoryBits = CATEGORY_DESTROYED_SHIP;
-    g_destroyedShipBody->CreateFixture(&projectileFixture);
+    b2FixtureDef destroyedFixture;
+    destroyedFixture.shape = &shape;
+    destroyedFixture.filter.categoryBits = CATEGORY_DESTROYED_SHIP;
+    // No mask bits, therefore intangible.
+    g_destroyedShipBody->CreateFixture(&destroyedFixture);
 }
 
 void DestroyBodies()
@@ -412,20 +434,35 @@ void DestroyBodies()
         {
             b2Vec2 pos = body->GetPosition();
             g_world->DestroyBody(body);
-            std::cout << "Destroyed large asteroid" << std::endl;
+            UpdateScoreAndLives(20);
+            std::cout << "Destroyed large asteroid. Score: " << g_score << ", Lives: " << g_lives << std::endl;
             destroyedLargeAsteroids.push_back(pos);
         }
         if (body_category & CATEGORY_MEDIUM_ASTEROID)
         {            
             b2Vec2 pos = body->GetPosition();
             g_world->DestroyBody(body);
-            std::cout << "Destroyed medium asteroid" << std::endl;
+            UpdateScoreAndLives(50);
+            std::cout << "Destroyed medium asteroid. Score: " << g_score << ", Lives: " << g_lives << std::endl;
             destroyedMediumAsteroids.push_back(pos);
         }
         if (body_category & CATEGORY_SMALL_ASTEROID)
         {
             g_world->DestroyBody(body);
-            std::cout << "Destroyed small asteroid" << std::endl;
+            UpdateScoreAndLives(100);
+            std::cout << "Destroyed small asteroid. Score: " << g_score << ", Lives: " << g_lives << std::endl;
+        }
+        if (body_category & CATEGORY_LARGE_UFO)
+        {
+            g_world->DestroyBody(body);
+            UpdateScoreAndLives(200);
+            std::cout << "Destroyed large UFO. Score: " << g_score << ", Lives: " << g_lives << std::endl;
+        }
+        if (body_category & CATEGORY_SMALL_UFO)
+        {
+            g_world->DestroyBody(body);
+            UpdateScoreAndLives(1000);
+            std::cout << "Destroyed small UFO. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
         if (body_category & CATEGORY_SHIP_PROJECTILE)
         {
@@ -439,7 +476,21 @@ void DestroyBodies()
                     return false;
                 }),
                 g_activeProjectiles.end());
-            std::cout << "Destroyed projectile" << std::endl;
+            std::cout << "Destroyed ship projectile" << std::endl;
+        }
+        if (body_category & CATEGORY_UFO_PROJECTILE)  // TODO: Should this use a active collection?
+        {
+            g_activeProjectiles.erase(
+                std::remove_if(g_activeProjectiles.begin(), g_activeProjectiles.end(), [&](const std::unique_ptr<Projectile>& proj) {
+                    if (std::find(g_bodiesToDestroy.begin(), g_bodiesToDestroy.end(), proj->body) != g_bodiesToDestroy.end())
+                    {
+                        g_world->DestroyBody(proj->body);
+                        return true; // Signal to remove from g_activeProjectiles
+                    }
+                    return false;
+                }),
+                g_activeProjectiles.end());
+            std::cout << "Destroyed UFO projectile" << std::endl;
         }
         if (body_category & CATEGORY_SPACESHIP)
         {
@@ -448,16 +499,9 @@ void DestroyBodies()
             //
             g_shipBody = g_destroyedShipBody;
             g_world->DestroyBody(body);
+            --g_lives;
+            g_lifeLost = true;
             std::cout << "Destroyed spaceship" << std::endl;
-
-            // TODO: This loses the player a "life". There is an explosion effect and a second or two
-            // after that to give the player a breath before starting the next board with a fresh
-            // spaceship.  If all of the player's lives are used up, the message "GAME OVER" shows
-            // up on the screen for a second or two. Then the "NEW GAME" option is given (this could
-            // be triggered by a keypress or by a mouseclick).
-            //
-            // There may be a need to implement a timer with a callback that triggers the next board
-            // or "NEW GAME" option.
         }
     }
 
@@ -645,11 +689,13 @@ int main()
     CreateUI(g_mainWindow, 20.0f /* font size in pixels */);
 
     CreateSpaceship();
-    CreateDestroyedSpaceship(); // kept in reserve.
+    CreateDestroyedSpaceship(); // kept in reserve. TODO: Use for explosion effect?
     CreateLargeAsteroid();
     CreateLargeAsteroid();
     CreateLargeAsteroid();
     CreateLargeAsteroid();
+    //CreateLargeUFO();
+    //CreateSmallUFO();
 
     // Body collision detection.
     //
@@ -702,15 +748,32 @@ int main()
 
         // Handle keypress user actions outside of the Step function just above.
         //
-        if (g_rotateLeft) RotateShip(0.1f);
-        if (g_rotateRight) RotateShip(-0.1f);
-        if (g_accelerate) AccelerateSpaceship();
-        if (g_fireProjectile) FireProjectile();
-        if (g_teleport) RandomTeleport();
+        if (g_rotateLeft)
+            RotateShip(0.1f);
+        if (g_rotateRight)
+            RotateShip(-0.1f);
+        if (g_accelerate)
+            AccelerateSpaceship();
+        if (g_fireProjectile)
+            FireProjectile();
+        if (g_teleport)
+            RandomTeleport();
 
         // When objects reach one side of the screen, they should "teleport" to the other side
         //
         WorldWrapAround();
+
+        std::string text = "Score: " + std::to_string(g_score);
+        ImGui::Text(text.c_str());
+        if (g_lives > 0)
+        {
+            text = "Lives: " + std::to_string(g_lives);
+        }
+        else
+        {
+            text = "GAME OVER!";
+        }
+        ImGui::Text(text.c_str());
 
         // Render everything on the screen
         //
@@ -730,6 +793,55 @@ int main()
         DestroyBodies();
 
         AgeProjectiles();
+
+        // TODO: Deal with every asteroid being destroyed. That should trigger the creation
+        // of new asteroids.
+
+        // TODO: Deal with GAME OVER conditions.
+        if (g_lifeLost && g_lives < 1)
+        {
+            g_lifeLost = false;
+            g_gameOver = true;
+            std::cout << "GAME OVER!" << std::endl;
+            g_wait_counter = 180;
+            // Need to write the message to the screen and then give a NEW GAME option.
+        }
+
+        if (g_lifeLost && g_lives >= 1)
+        {
+            g_lifeLost = false;
+            std::cout << "NEXT SPACESHIP!" << std::endl;
+            g_wait_counter = 60;  // Wait one second before enabling the next life.
+        }
+
+        if (g_wait_counter-- == 1) // This means that it had been set and has just run out.
+        {
+            if (g_gameOver)
+            {
+                g_gameOver = false;
+                g_score = 0;
+                g_lives = 3;
+                // TODO: Clear world and create new asteroids.
+                b2Body* body = g_world->GetBodyList();
+                while (body)
+                {
+                    b2Body* next = body->GetNext();
+                    g_world->DestroyBody(body);
+                    body = next;
+                }
+                CreateSpaceship();
+                CreateDestroyedSpaceship(); // kept in reserve. TODO: Use for explosion effect?
+                CreateLargeAsteroid();
+                CreateLargeAsteroid();
+                CreateLargeAsteroid();
+                CreateLargeAsteroid();
+            }
+            else
+            {
+                CreateSpaceship();
+            }
+            std::cout << "Spaceship should appear" << std::endl;
+        }
 
         // Throttle to cap at 60 FPS. Which means if it's going to be past
         // 60FPS, sleeps a while instead of doing more frames.
