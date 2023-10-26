@@ -22,11 +22,17 @@ GLFWwindow* g_mainWindow;
 b2World* g_world;
 b2Body* g_shipBody;  // The active player ship body.
 b2Body* g_destroyedShipBody;  // A destroyed player ship body.
+b2Body* g_largeSaucer;
+b2Body* g_smallSaucer;
 std::unordered_set<b2Body*> g_bodiesToDestroy;  // Keep a unique set of bodies to destroy.
 int g_score = 0;  // The player score starts at zero and hopefully will increase.
 int g_lives = 3;  // Three lives to begin with. This can go up or down!
+int g_large_asteroid_count = 4;
 int g_wait_counter = 0;  // Let the game run but wait until next phase to do something.
 bool g_gameOver = false;
+bool g_lifeLost = false;
+bool g_board_won = false;
+
 
 const float PIXELS_PER_UNIT = 20.0f;
 float timeStep = 60 > 0.0f ? 1.0f / 60 : float(0.0f);
@@ -39,7 +45,6 @@ bool g_rotateRight = false;
 bool g_accelerate = false;
 bool g_teleport = false;
 bool g_fireProjectile = false;
-bool g_lifeLost = false;
 
 // The type of game entity.
 //
@@ -49,26 +54,26 @@ const uint16 CATEGORY_LARGE_ASTEROID = 0x0004;
 const uint16 CATEGORY_MEDIUM_ASTEROID = 0x0008;
 const uint16 CATEGORY_SMALL_ASTEROID = 0x0010;
 const uint16 CATEGORY_DESTROYED_SHIP = 0x0020;
-const uint16 CATEGORY_LARGE_UFO = 0x0040;  // TODO: Implement the UFO types and behaviors.
-const uint16 CATEGORY_SMALL_UFO = 0x0080;
-const uint16 CATEGORY_UFO_PROJECTILE = 0x0100;
+const uint16 CATEGORY_LARGE_SAUCER = 0x0040;  // TODO: Implement the UFO types and behaviors.
+const uint16 CATEGORY_SMALL_SAUCER = 0x0080;
+const uint16 CATEGORY_SAUCER_PROJECTILE = 0x0100;
 
 const uint16 CATEGORY_ASTEROID = CATEGORY_LARGE_ASTEROID |
                                  CATEGORY_MEDIUM_ASTEROID |
                                  CATEGORY_SMALL_ASTEROID;
 
-const uint16 CATEGORY_UFO = CATEGORY_LARGE_UFO |
-                            CATEGORY_SMALL_UFO |
-                            CATEGORY_UFO_PROJECTILE;
+const uint16 CATEGORY_SAUCER = CATEGORY_LARGE_SAUCER |
+                            CATEGORY_SMALL_SAUCER |
+                            CATEGORY_SAUCER_PROJECTILE;
 
 const uint16 CATEGORY_SHIP = CATEGORY_SPACESHIP |
                              CATEGORY_SHIP_PROJECTILE;
 
 // The masks determine which objects may collide and be destroyed with what.
 //
-const uint16 MASK_SHIP_PROJECTILE = CATEGORY_ASTEROID | CATEGORY_UFO;
-const uint16 MASK_SPACESHIP = CATEGORY_ASTEROID | CATEGORY_UFO;
-const uint16 MASK_ASTEROID = CATEGORY_SHIP | CATEGORY_UFO;
+const uint16 MASK_SHIP_PROJECTILE = CATEGORY_ASTEROID | CATEGORY_SAUCER;
+const uint16 MASK_SPACESHIP = CATEGORY_ASTEROID | CATEGORY_SAUCER;
+const uint16 MASK_ASTEROID = CATEGORY_SHIP | CATEGORY_SAUCER;
 const uint16 MASK_UFO = CATEGORY_SHIP | CATEGORY_ASTEROID;
 
 
@@ -88,7 +93,6 @@ float GenerateRandomDirection()
 
 void UpdateScoreAndLives(int scoreToAdd)
 {
-    // TODO: If score breaks another 10000 points, add a life to the player.
     int oldScore = g_score;
     g_score += scoreToAdd;
     if (oldScore / 10000 < g_score / 10000)
@@ -416,17 +420,75 @@ void CreateDestroyedSpaceship()
     g_destroyedShipBody->CreateFixture(&destroyedFixture);
 }
 
+//
+// UFO related
+//
+
+void CreateSmallUFO()
+{
+    b2BodyDef shipBodyDef;
+    shipBodyDef.type = b2_dynamicBody; // the ship is a movable object
+    shipBodyDef.position.Set(10.0f, 10.0f); // starting position is roughly in the center of the screen
+    b2Body* body = g_world->CreateBody(&shipBodyDef);
+
+    // Define the vertices for the UFO
+    b2PolygonShape shipShape;
+    b2Vec2 vertices[7];
+    vertices[0].Set(1.0f, 0.0f);
+    vertices[1].Set(0.5f, -0.5f);
+    vertices[2].Set(-0.5f, -0.5f);
+    vertices[3].Set(-1.0f, 0.0f);
+    vertices[4].Set(-0.5f, 0.5f);
+    vertices[5].Set(0.5f, 0.5f);
+    vertices[6].Set(1.0f, 0.0f);
+    shipShape.Set(vertices, 7);
+
+    b2FixtureDef shipFixture;
+    shipFixture.shape = &shipShape;
+    shipFixture.density = 1.0f; // determines the mass of the ship
+    shipFixture.filter.categoryBits = CATEGORY_SMALL_SAUCER;
+    shipFixture.filter.maskBits = MASK_UFO;
+    body->CreateFixture(&shipFixture);
+    g_smallSaucer = body;
+}
+
+void CreateLargeUFO()
+{
+    b2BodyDef shipBodyDef;
+    shipBodyDef.type = b2_dynamicBody; // the ship is a movable object
+    shipBodyDef.position.Set(-10.0f, 10.0f); // starting position is roughly in the center of the screen
+    b2Body* body = g_world->CreateBody(&shipBodyDef);
+
+    // Define the vertices for the UFO
+    b2PolygonShape shipShape;
+    b2Vec2 vertices[7];
+    vertices[0].Set(2.0f, 0.0f);
+    vertices[1].Set(1.0f, -1.0f);
+    vertices[2].Set(-1.0f, -1.0f);
+    vertices[3].Set(-2.0f, 0.0f);
+    vertices[4].Set(-1.0f, 1.0f);
+    vertices[5].Set(1.0f, 1.0f);
+    vertices[6].Set(2.0f, 0.0f);
+    shipShape.Set(vertices, 7);
+
+    b2FixtureDef shipFixture;
+    shipFixture.shape = &shipShape;
+    shipFixture.density = 1.0f; // determines the mass of the ship
+    shipFixture.filter.categoryBits = CATEGORY_LARGE_SAUCER;
+    shipFixture.filter.maskBits = MASK_UFO;
+    body->CreateFixture(&shipFixture);
+    g_largeSaucer = body;
+}
+
+//
+// World-affecting
+//
+
 void DestroyBodies()
 {
     if (g_bodiesToDestroy.empty())  // This is just to help logging.
         return;
 
-    std::cout << "Bodies to destroy size: " << g_bodiesToDestroy.size() << std::endl;
-
-    std::vector<b2Vec2> destroyedLargeAsteroids;
-    std::vector<b2Vec2> destroyedMediumAsteroids;
-
-    // TODO: this list might contain duplicate bodies, which can cause read access violations.
     for (b2Body* body : g_bodiesToDestroy)
     {
         uint16 body_category = body->GetFixtureList()[0].GetFilterData().categoryBits;
@@ -436,7 +498,8 @@ void DestroyBodies()
             g_world->DestroyBody(body);
             UpdateScoreAndLives(20);
             std::cout << "Destroyed large asteroid. Score: " << g_score << ", Lives: " << g_lives << std::endl;
-            destroyedLargeAsteroids.push_back(pos);
+            CreateMediumAsteroid(pos);
+            CreateMediumAsteroid(pos);
         }
         if (body_category & CATEGORY_MEDIUM_ASTEROID)
         {            
@@ -444,7 +507,8 @@ void DestroyBodies()
             g_world->DestroyBody(body);
             UpdateScoreAndLives(50);
             std::cout << "Destroyed medium asteroid. Score: " << g_score << ", Lives: " << g_lives << std::endl;
-            destroyedMediumAsteroids.push_back(pos);
+            CreateSmallAsteroid(pos);
+            CreateSmallAsteroid(pos);
         }
         if (body_category & CATEGORY_SMALL_ASTEROID)
         {
@@ -452,19 +516,19 @@ void DestroyBodies()
             UpdateScoreAndLives(100);
             std::cout << "Destroyed small asteroid. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
-        if (body_category & CATEGORY_LARGE_UFO)
+        if (body_category & CATEGORY_LARGE_SAUCER)
         {
             g_world->DestroyBody(body);
             UpdateScoreAndLives(200);
-            std::cout << "Destroyed large UFO. Score: " << g_score << ", Lives: " << g_lives << std::endl;
+            std::cout << "Destroyed large saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
-        if (body_category & CATEGORY_SMALL_UFO)
+        if (body_category & CATEGORY_SMALL_SAUCER)
         {
             g_world->DestroyBody(body);
             UpdateScoreAndLives(1000);
-            std::cout << "Destroyed small UFO. Score: " << g_score << ", Lives: " << g_lives << std::endl;
+            std::cout << "Destroyed small saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
-        if (body_category & CATEGORY_SHIP_PROJECTILE)
+        if (body_category & CATEGORY_SAUCER_PROJECTILE)  // TODO: Should this use an active projectile collection?
         {
             g_activeProjectiles.erase(
                 std::remove_if(g_activeProjectiles.begin(), g_activeProjectiles.end(), [&](const std::unique_ptr<Projectile>& proj) {
@@ -476,21 +540,7 @@ void DestroyBodies()
                     return false;
                 }),
                 g_activeProjectiles.end());
-            std::cout << "Destroyed ship projectile" << std::endl;
-        }
-        if (body_category & CATEGORY_UFO_PROJECTILE)  // TODO: Should this use a active collection?
-        {
-            g_activeProjectiles.erase(
-                std::remove_if(g_activeProjectiles.begin(), g_activeProjectiles.end(), [&](const std::unique_ptr<Projectile>& proj) {
-                    if (std::find(g_bodiesToDestroy.begin(), g_bodiesToDestroy.end(), proj->body) != g_bodiesToDestroy.end())
-                    {
-                        g_world->DestroyBody(proj->body);
-                        return true; // Signal to remove from g_activeProjectiles
-                    }
-                    return false;
-                }),
-                g_activeProjectiles.end());
-            std::cout << "Destroyed UFO projectile" << std::endl;
+            std::cout << "Destroyed saucer projectile" << std::endl;
         }
         if (body_category & CATEGORY_SPACESHIP)
         {
@@ -505,19 +555,18 @@ void DestroyBodies()
         }
     }
 
-    for (b2Vec2 dla : destroyedLargeAsteroids)
-    {
-        CreateMediumAsteroid(dla);
-        CreateMediumAsteroid(dla);
-    }
-    destroyedLargeAsteroids.clear();
-
-    for (b2Vec2 dma : destroyedMediumAsteroids)
-    {
-        CreateSmallAsteroid(dma);
-        CreateSmallAsteroid(dma);
-    }
-    destroyedMediumAsteroids.clear();
+    g_activeProjectiles.erase(
+        std::remove_if(g_activeProjectiles.begin(), g_activeProjectiles.end(), [&](const std::unique_ptr<Projectile>& proj) {
+            if (std::find(g_bodiesToDestroy.begin(), g_bodiesToDestroy.end(), proj->body) != g_bodiesToDestroy.end())
+            {
+                std::cout << "Destroying projectile!" << std::endl;
+                g_world->DestroyBody(proj->body);
+                return true; // Signal to remove from g_activeProjectiles
+            }
+            return false;
+        }),
+        g_activeProjectiles.end());
+    std::cout << "Projectiles left: " << g_activeProjectiles.size() << std::endl;
 
     g_bodiesToDestroy.clear();
     std::cout << "---" << std::endl;
@@ -560,6 +609,44 @@ void WorldWrapAround()
             b->SetTransform(pos, b->GetAngle());
         }
     }
+}
+
+void ClearWorld()
+{
+    b2Body* body = g_world->GetBodyList();
+    while (body)
+    {
+        b2Body* next = body->GetNext();
+        g_world->DestroyBody(body);
+        body = next;
+    }
+}
+
+void CreateWorldStart()
+{
+    CreateSpaceship();
+    CreateDestroyedSpaceship(); // kept in reserve. TODO: Use for explosion effect?
+    for (int i = 0; i < g_large_asteroid_count; i++)
+    {
+        CreateLargeAsteroid();
+    }
+    //CreateLargeUFO();
+    //CreateSmallUFO();
+}
+
+void UpdateTextDisplay()
+{
+    std::string text = "Score: " + std::to_string(g_score);
+    ImGui::Text(text.c_str());
+    if (g_lives > 0)
+    {
+        text = "Lives: " + std::to_string(g_lives);
+    }
+    else
+    {
+        text = "GAME OVER!";
+    }
+    ImGui::Text(text.c_str());
 }
 
 //
@@ -688,14 +775,7 @@ int main()
     g_world->SetDebugDraw(&g_debugDraw);
     CreateUI(g_mainWindow, 20.0f /* font size in pixels */);
 
-    CreateSpaceship();
-    CreateDestroyedSpaceship(); // kept in reserve. TODO: Use for explosion effect?
-    CreateLargeAsteroid();
-    CreateLargeAsteroid();
-    CreateLargeAsteroid();
-    CreateLargeAsteroid();
-    //CreateLargeUFO();
-    //CreateSmallUFO();
+    CreateWorldStart();
 
     // Body collision detection.
     //
@@ -763,17 +843,7 @@ int main()
         //
         WorldWrapAround();
 
-        std::string text = "Score: " + std::to_string(g_score);
-        ImGui::Text(text.c_str());
-        if (g_lives > 0)
-        {
-            text = "Lives: " + std::to_string(g_lives);
-        }
-        else
-        {
-            text = "GAME OVER!";
-        }
-        ImGui::Text(text.c_str());
+        UpdateTextDisplay();
 
         // Render everything on the screen
         //
@@ -792,19 +862,23 @@ int main()
         //
         DestroyBodies();
 
-        AgeProjectiles();
+        AgeProjectiles();  // TODO: Before or after DestroyBodies?
 
-        // TODO: Deal with every asteroid being destroyed. That should trigger the creation
-        // of new asteroids.
+        // TODO: Deal with all asteroids being destroyed. That should trigger the creation
+        // of a new board.
 
-        // TODO: Deal with GAME OVER conditions.
+        if (g_world->GetBodyCount() < 3 && !g_board_won)
+        {
+            g_board_won = true;
+            g_wait_counter = 120;
+        }
+
         if (g_lifeLost && g_lives < 1)
         {
             g_lifeLost = false;
             g_gameOver = true;
             std::cout << "GAME OVER!" << std::endl;
             g_wait_counter = 180;
-            // Need to write the message to the screen and then give a NEW GAME option.
         }
 
         if (g_lifeLost && g_lives >= 1)
@@ -821,20 +895,14 @@ int main()
                 g_gameOver = false;
                 g_score = 0;
                 g_lives = 3;
-                // TODO: Clear world and create new asteroids.
-                b2Body* body = g_world->GetBodyList();
-                while (body)
-                {
-                    b2Body* next = body->GetNext();
-                    g_world->DestroyBody(body);
-                    body = next;
-                }
-                CreateSpaceship();
-                CreateDestroyedSpaceship(); // kept in reserve. TODO: Use for explosion effect?
-                CreateLargeAsteroid();
-                CreateLargeAsteroid();
-                CreateLargeAsteroid();
-                CreateLargeAsteroid();
+                ClearWorld();
+                CreateWorldStart();
+            }
+            else if (g_board_won)
+            {
+                g_board_won = false;
+                ClearWorld();
+                CreateWorldStart();
             }
             else
             {
