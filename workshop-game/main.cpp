@@ -230,6 +230,25 @@ b2Vec2 GenerateRandomAsteroidPos()
     return vec;
 }
 
+b2ChainShape* GetRandomAsteroidShape(int size)
+{
+    float low = 0.5 * size;
+    float high = 1.5 * size;
+    b2ChainShape* box_shape = new b2ChainShape;
+    b2Vec2 vertices[8];
+    vertices[0].Set(GenerateRandom(low, high), GenerateRandom(low, high));
+    vertices[1].Set(GenerateRandom(low, high), 0.0f);
+    vertices[2].Set(GenerateRandom(low, high), -GenerateRandom(low, high));
+    vertices[3].Set(0.0f, -GenerateRandom(low, high));
+    vertices[4].Set(-GenerateRandom(low, high), -GenerateRandom(low, high));
+    vertices[5].Set(-GenerateRandom(low, high), 0.0f);
+    vertices[6].Set(-GenerateRandom(low, high), GenerateRandom(low, high));
+    vertices[7].Set(0.0f, GenerateRandom(low, high));
+    box_shape->CreateLoop(vertices, 8);
+
+    return box_shape;
+}
+
 void CreateSmallAsteroid(b2Vec2 pos)
 {
     b2BodyDef asteroidBodyDef;
@@ -239,15 +258,16 @@ void CreateSmallAsteroid(b2Vec2 pos)
     asteroidBodyDef.position.Set(x, y);
     b2Body* asteroidBody = g_world->CreateBody(&asteroidBodyDef);
 
-    b2PolygonShape box_shape;
-    box_shape.SetAsBox(1.0f, 1.0f); // TODO: Improve shape
+    b2ChainShape* box_shape = GetRandomAsteroidShape(1);
 
     b2FixtureDef asteroidFixture;
-    asteroidFixture.shape = &box_shape;
+    asteroidFixture.shape = box_shape;
     asteroidFixture.density = 1.0f;
     asteroidFixture.filter.categoryBits = CATEGORY_SMALL_ASTEROID;
     asteroidFixture.filter.maskBits = MASK_ASTEROID;
     asteroidBody->CreateFixture(&asteroidFixture);
+
+    delete box_shape;
 
     // Starting asteroids have a random direction of motion
     //
@@ -268,15 +288,16 @@ void CreateMediumAsteroid(b2Vec2 pos)
     asteroidBodyDef.position.Set(x, y);
     b2Body* asteroidBody = g_world->CreateBody(&asteroidBodyDef);
 
-    b2PolygonShape box_shape;
-    box_shape.SetAsBox(2.0f, 2.0f); // TODO: Improve shape
+    b2ChainShape* box_shape = GetRandomAsteroidShape(2);
 
     b2FixtureDef asteroidFixture;
-    asteroidFixture.shape = &box_shape;
+    asteroidFixture.shape = box_shape;
     asteroidFixture.density = 1.0f;
     asteroidFixture.filter.categoryBits = CATEGORY_MEDIUM_ASTEROID;
     asteroidFixture.filter.maskBits = MASK_ASTEROID;
     asteroidBody->CreateFixture(&asteroidFixture);
+
+    delete box_shape;
 
     // Starting asteroids have a random direction of motion
     //
@@ -296,15 +317,16 @@ void CreateLargeAsteroid()
     asteroidBodyDef.position.Set(randomPos.x, randomPos.y);
     b2Body* asteroidBody = g_world->CreateBody(&asteroidBodyDef);
 
-    b2PolygonShape box_shape;
-    box_shape.SetAsBox(3.0f, 3.0f); // TODO: Improve shape
+    b2ChainShape* box_shape = GetRandomAsteroidShape(3);
 
     b2FixtureDef asteroidFixture;
-    asteroidFixture.shape = &box_shape;
+    asteroidFixture.shape = box_shape;
     asteroidFixture.density = 1.0f;
     asteroidFixture.filter.categoryBits = CATEGORY_LARGE_ASTEROID;
     asteroidFixture.filter.maskBits = MASK_ASTEROID;
     asteroidBody->CreateFixture(&asteroidFixture);
+
+    delete box_shape;
 
     // Starting asteroids have a random direction of motion
     //
@@ -382,6 +404,7 @@ void CreateSpaceship()
     b2BodyDef shipBodyDef;
     shipBodyDef.type = b2_dynamicBody; // the ship is a movable object
     shipBodyDef.position.Set(0.0f, 20.0f); // starting position is roughly in the center of the screen
+    //shipBodyDef.userData.pointer = (uintptr_t)this;
     b2Body* body = g_world->CreateBody(&shipBodyDef);
 
     // Define the vertices for the triangle (representing the ship)
@@ -402,6 +425,46 @@ void CreateSpaceship()
     body->SetBullet(true);
     g_shipBody = body;
 }
+
+//TODO: Maybe make this asteroid instead. And create a projectile class as well?
+class Spaceship
+{
+public:
+    Spaceship()
+    {
+        b2BodyDef shipBodyDef;
+        shipBodyDef.type = b2_dynamicBody; // the ship is a movable object
+        shipBodyDef.position.Set(0.0f, 20.0f); // starting position is roughly in the center of the screen
+        shipBodyDef.userData.pointer = (uintptr_t)this;
+        b2Body* body = g_world->CreateBody(&shipBodyDef);
+
+        // Define the vertices for the triangle (representing the ship)
+        b2PolygonShape shipShape;
+        b2Vec2 vertices[3];
+        vertices[0].Set(-1, -2);
+        vertices[1].Set(1, -2);
+        vertices[2].Set(0, 2);
+        shipShape.Set(vertices, 3);
+
+        b2FixtureDef shipFixture;
+        shipFixture.shape = &shipShape;
+        shipFixture.density = 1.0f; // determines the mass of the ship
+        shipFixture.filter.categoryBits = CATEGORY_SPACESHIP;
+        shipFixture.filter.maskBits = MASK_SPACESHIP;
+        body->CreateFixture(&shipFixture);
+        body->SetLinearDamping(0.5f); // Creates "drag" for the ship
+        body->SetBullet(true);
+        g_shipBody = body;
+    }
+
+    virtual ~Spaceship()
+    {
+        g_world->DestroyBody(body);
+    }
+
+private:
+    b2Body* body = nullptr;
+};
 
 void CreateDestroyedSpaceship()
 {
@@ -470,6 +533,7 @@ void CreateLargeUFO()
     vertices[5].Set(1.0f, 1.0f);
     vertices[6].Set(2.0f, 0.0f);
     shipShape.Set(vertices, 7);
+
 
     b2FixtureDef shipFixture;
     shipFixture.shape = &shipShape;
@@ -863,9 +927,6 @@ int main()
         DestroyBodies();
 
         AgeProjectiles();  // TODO: Before or after DestroyBodies?
-
-        // TODO: Deal with all asteroids being destroyed. That should trigger the creation
-        // of a new board.
 
         if (g_world->GetBodyCount() < 3 && !g_board_won)
         {
