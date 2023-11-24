@@ -14,83 +14,53 @@
 #include <random>
 #include <cmath>
 #include <unordered_set>
-
 #include "box2d/box2d.h"
 
+class GameObject;
+class Projectile;
+class Asteroid;
+class Heroship;
+class Saucer;
+
+class MyContactListener;
+
+float GenerateRandom(float lower, float upper);
+float GenerateRandomDirection();
+void ClearWorld();
+void CreateWorldStart();
+void UpdateTextDisplay();
+void UpdateGameObjects();
+void UpdateGameState();
+void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+void MouseMotionCallback(GLFWwindow*, double xd, double yd);
+void MouseButtonCallback(GLFWwindow* window, int32 button, int32 action, int32 mods);
 
 GLFWwindow* g_mainWindow;
 b2World* g_world;
-//b2Body* g_shipBody;  // The active player ship body.
-//b2Body* g_destroyedShipBody;  // A destroyed player ship body.
-int g_score = 0;  // The player score starts at zero and hopefully will increase.
+std::unordered_set<GameObject*> g_gameObjects; // Keep a unique set of game objects to parallel the world bodies
+Heroship* g_heroShip;  // It's easier to call OnKeyPress() on the hero ship.
+int g_score = 0;
+int g_high_score = 0;
 int g_lives = 3;  // Three lives to begin with. This can go up or down!
-int g_large_asteroid_count = 4;  // TODO: Consider adding a large asteroid every level.
+int g_large_asteroid_count = 4; // This will increase by one asteroid every level.
 int g_wait_counter = 0;  // Let the game run but wait until next phase to do something.
+int g_saucer_timer = 0;  // Mainly to spawn saucers to harass the hero ship.
 bool g_gameOver = false;
 bool g_lifeLost = false;
 bool g_board_won = false;
-
 const float PIXELS_PER_UNIT = 20.0f;
 const float TIME_STEP = 60 > 0.0f ? 1.0f / 60 : float(0.0f);
 
-
-// The type of game entity.
-//
-const uint16 CATEGORY_SPACESHIP = 0x0001;
-const uint16 CATEGORY_SHIP_PROJECTILE = 0x0002;
-const uint16 CATEGORY_LARGE_ASTEROID = 0x0004;
-const uint16 CATEGORY_MEDIUM_ASTEROID = 0x0008;
-const uint16 CATEGORY_SMALL_ASTEROID = 0x0010;
-const uint16 CATEGORY_DESTROYED_SHIP = 0x0020;
-const uint16 CATEGORY_LARGE_SAUCER = 0x0040;  // TODO: Implement the UFO types and behaviors.
-const uint16 CATEGORY_SMALL_SAUCER = 0x0080;
-const uint16 CATEGORY_SAUCER_PROJECTILE = 0x0100;
-
-const uint16 CATEGORY_ASTEROID = CATEGORY_LARGE_ASTEROID |
-                                 CATEGORY_MEDIUM_ASTEROID |
-                                 CATEGORY_SMALL_ASTEROID;
-
-const uint16 CATEGORY_SAUCER = CATEGORY_LARGE_SAUCER |
-                            CATEGORY_SMALL_SAUCER |
-                            CATEGORY_SAUCER_PROJECTILE;
-
-const uint16 CATEGORY_SHIP = CATEGORY_SPACESHIP |
-                             CATEGORY_SHIP_PROJECTILE;
-
-// The masks determine which objects may collide and be destroyed with what.
-// TODO: Verify that these are correct in testing.
-//
-const uint16 MASK_SHIP_PROJECTILE = CATEGORY_ASTEROID | CATEGORY_SAUCER;
-const uint16 MASK_SPACESHIP = CATEGORY_ASTEROID | CATEGORY_SAUCER;
-const uint16 MASK_ASTEROID = CATEGORY_SHIP | CATEGORY_SAUCER;
-const uint16 MASK_UFO = CATEGORY_SHIP | CATEGORY_ASTEROID;
-
-
 enum Size
 {
-    Small,
-    Medium,
-    Large
+    Small = 1,
+    Medium = 2,
+    Large = 3
 };
-
-float GenerateRandom(float lower, float upper)
-{
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<> dis(lower, upper);
-    float random_value = dis(gen);  // The loss of data from double to float is acceptable.
-    return random_value;
-}
-
-float GenerateRandomDirection()
-{
-    return GenerateRandom(0, 2 * b2_pi);  // Random direction in radians. 0 to 2*pi.
-}
 
 class GameObject
 {
 public:
-
     ~GameObject()
     {
         g_world->DestroyBody(body); // This is where the body is destroyed in the physics engine
@@ -103,6 +73,9 @@ public:
 
     void UpdateScoreAndLives(int scoreToAdd)
     {
+        if (!willScorePoints)
+            return;
+
         int oldScore = g_score;
         g_score += scoreToAdd;
         if (oldScore / 10000 < g_score / 10000)
@@ -148,16 +121,49 @@ public:
     b2Body* body;
     char* gameObjectType = "Unknown";
     bool willDestruct = false;
-};
+    bool willScorePoints = false;
 
-std::unordered_set<GameObject*> g_gameObjects; // Keep a unique set of game objects to parallel the world bodies
+protected:
+
+    // The type of game entity.
+    //
+    const uint16 CATEGORY_SPACESHIP = 0x0001;
+    const uint16 CATEGORY_SHIP_PROJECTILE = 0x0002;
+    const uint16 CATEGORY_LARGE_ASTEROID = 0x0004;
+    const uint16 CATEGORY_MEDIUM_ASTEROID = 0x0008;
+    const uint16 CATEGORY_SMALL_ASTEROID = 0x0010;
+    const uint16 CATEGORY_DESTROYED_SHIP = 0x0020;
+    const uint16 CATEGORY_LARGE_SAUCER = 0x0040;
+    const uint16 CATEGORY_SMALL_SAUCER = 0x0080;
+    const uint16 CATEGORY_SAUCER_PROJECTILE = 0x0100;
+
+    const uint16 CATEGORY_ASTEROID = CATEGORY_LARGE_ASTEROID |
+                                     CATEGORY_MEDIUM_ASTEROID |
+                                     CATEGORY_SMALL_ASTEROID;
+
+    const uint16 CATEGORY_SAUCER = CATEGORY_LARGE_SAUCER |
+                                   CATEGORY_SMALL_SAUCER |
+                                   CATEGORY_SAUCER_PROJECTILE;
+
+    const uint16 CATEGORY_HEROSHIP = CATEGORY_SPACESHIP |
+                                     CATEGORY_SHIP_PROJECTILE;
+
+    // The masks determine which objects may collide and be destroyed with what.
+    // Generally, game objects collide with anything not in their own category,
+    // for example, asteroids don't collide with each other, but everything else
+    // collides with asteroids.
+    //
+    const uint16 MASK_HEROSHIP = CATEGORY_ASTEROID | CATEGORY_SAUCER;
+    const uint16 MASK_ASTEROID = CATEGORY_HEROSHIP | CATEGORY_SAUCER;
+    const uint16 MASK_SAUCER = CATEGORY_HEROSHIP | CATEGORY_ASTEROID;
+};
 
 class Projectile : public GameObject
 {
 public:
     Projectile(b2Vec2 position, b2Vec2 velocity)
     {
-        gameObjectType = "Projectile";
+        gameObjectType = "Hero Projectile";
 
         b2BodyDef bodyDef;
         bodyDef.type = b2_dynamicBody;
@@ -172,7 +178,7 @@ public:
         projectileFixture.shape = &shape;
         projectileFixture.density = 1.0f;
         projectileFixture.filter.categoryBits = CATEGORY_SHIP_PROJECTILE;
-        projectileFixture.filter.maskBits = MASK_SHIP_PROJECTILE;
+        projectileFixture.filter.maskBits = MASK_HEROSHIP;
         body->CreateFixture(&projectileFixture);
         body->SetLinearVelocity(velocity);
         body->SetBullet(true);
@@ -286,7 +292,7 @@ public:
     }
 
     void OnDestruction() override
-    { // TODO: Asteroid destruction should not count when clearing the world for the next level.
+    {
         if (sizeOfAsteroid == Size::Large)
         {
             b2Vec2 pos = body->GetPosition();
@@ -386,12 +392,12 @@ private:
     }
 };
 
-class Spaceship : public GameObject
+class Heroship : public GameObject
 {
 public:
-    Spaceship()
+    Heroship()
     {
-        gameObjectType = "Spaceship";
+        gameObjectType = "Heroship";
         g_lifeLost = false;
 
         b2BodyDef shipBodyDef;
@@ -412,13 +418,13 @@ public:
         shipFixture.shape = &shipShape;
         shipFixture.density = 1.0f; // determines the mass of the ship
         shipFixture.filter.categoryBits = CATEGORY_SPACESHIP;
-        shipFixture.filter.maskBits = MASK_SPACESHIP;
+        shipFixture.filter.maskBits = MASK_HEROSHIP;
         body->CreateFixture(&shipFixture);
         body->SetLinearDamping(0.5f); // Creates "drag" for the ship
         body->SetBullet(true);
     }
 
-    virtual ~Spaceship()
+    virtual ~Heroship()
     {
     }
 
@@ -496,7 +502,7 @@ private:
     }
 
     void AccelerateSpaceship()
-{
+    {
     // Calculate the force of accelation with a diminishing return. The faster
     // the ship goes, the less able the ship's propulsion is to accelerate the
     // ship. This is to prevent unlimited acceleration in the game.
@@ -554,21 +560,77 @@ private:
     bool fireProjectile = false;
 };
 
-Spaceship* g_heroShip;
+class SaucerProjectile : public GameObject
+{
+public:
+    SaucerProjectile(b2Vec2 position, b2Vec2 velocity)
+    {
+        gameObjectType = "Saucer Projectile";
+
+        b2BodyDef bodyDef;
+        bodyDef.type = b2_dynamicBody;
+        bodyDef.position = position;
+        bodyDef.userData.pointer = (uintptr_t)this;
+        body = g_world->CreateBody(&bodyDef);
+
+        b2CircleShape shape;
+        shape.m_radius = 0.1f;
+
+        b2FixtureDef projectileFixture;
+        projectileFixture.shape = &shape;
+        projectileFixture.density = 1.0f;
+        projectileFixture.filter.categoryBits = CATEGORY_SAUCER_PROJECTILE;
+        projectileFixture.filter.maskBits = MASK_SAUCER;
+        body->CreateFixture(&projectileFixture);
+        body->SetLinearVelocity(velocity);
+        body->SetBullet(true);
+    }
+
+    ~SaucerProjectile() {}
+
+    void Update() override
+    {
+        b2Vec2 velocity = body->GetLinearVelocity();
+        float traveledThisFrame = velocity.Length() * TIME_STEP; // TIME_STEP is the duration of a frame
+        distanceTraveled += traveledThisFrame;
+
+        if (distanceTraveled > maxRange)
+        {
+            this->willDestruct = true;
+        }
+
+        WorldWrapAround();
+    }
+
+    void OnDestruction() override
+    {
+        // Nothing to do here. The projectile will simply be destroyed.
+    }
+
+private:
+    float distanceTraveled = 0.0f;
+    const float maxRange = 30.0f;
+};
 
 class Saucer : public GameObject
 {
 public:
-
     Saucer(Size size)
     {
-        if (size != Size::Large)
-        {
-            sizeOfSaucer = Size::Small;
-        }
         b2BodyDef shipBodyDef;
         shipBodyDef.type = b2_dynamicBody; // the ship is a movable object
-        shipBodyDef.position.Set(-10.0f, 10.0f); // starting position is roughly in the center of the screen
+        float x = 0.0f;
+        if (size == Size::Medium)
+        {
+            sizeOfSaucer = Size::Medium;
+            x = -1 * ((g_camera.m_width / PIXELS_PER_UNIT) / 2.0f);
+        }
+        else if (size == Size::Small)
+        {
+            sizeOfSaucer = Size::Small;
+            x = (g_camera.m_width / PIXELS_PER_UNIT) / 2.0f;
+        }
+        shipBodyDef.position.Set(x, 20.0f);
         shipBodyDef.userData.pointer = (uintptr_t)this;
         body = g_world->CreateBody(&shipBodyDef);
 
@@ -586,7 +648,7 @@ public:
         b2FixtureDef shipFixture;
         shipFixture.shape = &shipShape;
         shipFixture.density = 1.0f; // determines the mass of the ship
-        if (sizeOfSaucer == Size::Large)
+        if (sizeOfSaucer == Size::Medium)
         {
                 shipFixture.filter.categoryBits = CATEGORY_LARGE_SAUCER;
                 gameObjectType = "Large Saucer";
@@ -596,38 +658,93 @@ public:
                 shipFixture.filter.categoryBits = CATEGORY_SMALL_SAUCER;
                 gameObjectType = "Small Saucer";
         }
-        shipFixture.filter.maskBits = MASK_UFO;
+        shipFixture.filter.maskBits = MASK_SAUCER;
         body->CreateFixture(&shipFixture);
     }
 
     virtual ~Saucer() {}
 
+    void RandomSaucerDirection()
+    {
+        float desiredVelocity = 0.0f;
+        if (sizeOfSaucer == Size::Medium)
+        {
+            desiredVelocity = 8.0f; // Adjust as needed
+        }
+        else
+        {
+            desiredVelocity = 12.0f; // Adjust as needed
+        }
+        float angle = 0.0f;
+        if (sizeOfSaucer == Size::Medium)
+        {
+            angle = GenerateRandom(0, b2_pi) - (0.5f * b2_pi); // Towards right of screen
+        }
+        else if (sizeOfSaucer == Size::Small)
+        {
+            angle = GenerateRandom(0, b2_pi) + (0.5f * b2_pi); // Towards left of screen
+        }
+        b2Vec2 directionOfMotion(cos(angle), sin(angle));
+        directionOfMotion *= desiredVelocity;
+        body->SetLinearVelocity(directionOfMotion);
+    }
+
+    void FireSaucerProjectile()
+    {
+        float angle = GenerateRandomDirection();
+        b2Vec2 directionOfFire(cos(angle), sin(angle));
+        b2Vec2 launchPosition = body->GetPosition() + directionOfFire;
+        float projectileSpeed = 40.0f;
+        directionOfFire *= projectileSpeed;
+
+        // Create the projectile
+        g_gameObjects.emplace(new SaucerProjectile(launchPosition, directionOfFire));
+    }
+
     void Update() override
     {
+        if (g_saucer_timer % 100 == 0)
+        {
+            RandomSaucerDirection();
+        }
+
+        b2Vec2 pos = body->GetPosition();
+        if (sizeOfSaucer == Size::Medium &&
+            pos.x > (g_camera.m_width / PIXELS_PER_UNIT) / 2.0f)
+        {
+            this->willDestruct = true;
+        }
+        else if (sizeOfSaucer == Size::Small &&
+                 pos.x < -1 * ((g_camera.m_width / PIXELS_PER_UNIT) / 2.0f))
+        {
+            this->willDestruct = true;
+        }
+
         WorldWrapAround();
+
+        if (g_saucer_timer % 60 == 0)
+        {
+            FireSaucerProjectile();
+        }
     }
 
     void OnDestruction() override
     {
-        if (sizeOfSaucer == Size::Large)
+        if (sizeOfSaucer == Size::Medium)
         {
-                UpdateScoreAndLives(200);
-                std::cout << "Destroyed large saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
+            UpdateScoreAndLives(200);
+            std::cout << "Destroyed large saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
         if (sizeOfSaucer == Size::Small)
         {
-                UpdateScoreAndLives(1000);
-                std::cout << "Destroyed small saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
+            UpdateScoreAndLives(1000);
+            std::cout << "Destroyed small saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
     }
 
 private:
     Size sizeOfSaucer = Size::Large;
 };
-
-//
-// GameObject-affecting
-//
 
 void ClearWorld()
 {
@@ -646,29 +763,37 @@ void ClearWorld()
     }
 }
 
+void ClearWorldExceptHero()
+{
+    std::vector<GameObject*> toDestroy;
+
+    for (GameObject* obj : g_gameObjects)
+    {
+        if (strcmp(obj->gameObjectType, "Heroship") == 0)
+            continue;
+
+        toDestroy.push_back(obj);
+    }
+
+    for (GameObject* objToDestroy : toDestroy)
+    {
+        g_gameObjects.erase(objToDestroy);
+        delete objToDestroy;
+    }
+}
+
 void CreateWorldStart()
 {
-    g_heroShip = new Spaceship();
-    g_gameObjects.emplace(g_heroShip);
+    if (g_heroShip == nullptr)
+    {
+        g_heroShip = new Heroship();
+        g_gameObjects.emplace(g_heroShip);
+    }
     for (int i = 0; i < g_large_asteroid_count; i++)
     {
         g_gameObjects.emplace(new Asteroid());
     }
-    //g_gameObjects.emplace(new Saucer(Size::Large));
-}
-
-void UpdateTextDisplay()
-{
-    std::string displayText = "Score: " + std::to_string(g_score);
-    if (g_lives > 0)
-    {
-        displayText += "\nLives: " + std::to_string(g_lives);
-    }
-    else
-    {
-        displayText += "\nGAME OVER!";
-    }
-    g_debugDraw.DrawString(15, 15, displayText.c_str());
+    g_saucer_timer = 0;
 }
 
 void UpdateGameObjects()
@@ -696,7 +821,39 @@ void UpdateGameObjects()
     }
 }
 
-void UpdateGameState()
+void CheckCreateSaucer()
+{
+    if (g_gameOver)
+        return;
+
+    g_saucer_timer++;
+    if (g_saucer_timer % 1200 == 0)
+    {
+        if (GenerateRandom(0, 1) > 0.45f)
+        {
+            g_gameObjects.emplace(new Saucer(Size::Medium));
+        }
+        else
+        {
+            g_gameObjects.emplace(new Saucer(Size::Small));
+        }
+    }
+}
+
+bool IsOnlyHeroShipLeft()
+{
+    if (g_world->GetBodyCount() != 1)
+        return false;
+
+    auto body = g_world->GetBodyList();
+    auto obj = (GameObject*)body->GetUserData().pointer;
+    if (strcmp(obj->gameObjectType, "Heroship") == 0)
+        return true;
+
+    return false;
+}
+
+void CheckForTransition()
 {
     if (g_lifeLost)
     {
@@ -712,18 +869,20 @@ void UpdateGameState()
         {
             // If a life was lost and the player still has lives left, the next spaceship
             // is activated. There are still asteroids in the world.
-            std::cout << "NEXT SPACESHIP!" << std::endl;
+            std::cout << "NEXT HEROSHIP!" << std::endl;
             g_wait_counter = 60; // Wait one second before enabling the next life.
         }
     }
-    else if (g_world->GetBodyCount() == 1 && !g_board_won)
+    else if (IsOnlyHeroShipLeft() && !g_board_won)
     {
-        // Check for board won by detecting only the hero spaceship left in the world.
         g_board_won = true;
         std::cout << "NEXT LEVEL!" << std::endl;
         g_wait_counter = 120;
     }
+}
 
+void RegenerateWorld()
+{
     // If it is time for the regeneration of the game objects,
     // clear the world and create them.
     if (g_wait_counter-- == 1) // This means that it had been set and has just run out.
@@ -732,33 +891,43 @@ void UpdateGameState()
         {
             std::cout << "Handle game over" << std::endl;
             g_gameOver = false;
+            if (g_score > g_high_score)
+            {
+                g_high_score = g_score;
+            }
             g_score = 0;
             g_lives = 3;
             g_large_asteroid_count = 4;
             ClearWorld();
             CreateWorldStart();
         }
-        else if (g_board_won)
+        else if (g_board_won) //TODO: Make sure that there is exactly one hero ship.
         {
             std::cout << "Handle board won" << std::endl;
             g_board_won = false;
             g_large_asteroid_count++;
-            ClearWorld();
+            ClearWorldExceptHero();
             CreateWorldStart();
         }
         else // The level was not yet complete. Need a new Spaceship for our hero!
         {
             std::cout << "Handle MIA" << std::endl;
-            g_heroShip = new Spaceship();
+            g_heroShip = new Heroship();
             g_gameObjects.emplace(g_heroShip);
         }
     }
 }
 
+void UpdateGameState()
+{
+    CheckCreateSaucer(); // If not game over, check if it is time for a saucer attack!
+    CheckForTransition(); // Sets a wait counter for world regeneration
+    RegenerateWorld(); // Take care of the regeneration
+}
+
 //
 // Entity collision detection.
 //
-
 class MyContactListener : public b2ContactListener
 {
     void BeginContact(b2Contact* contact) override
@@ -770,49 +939,23 @@ class MyContactListener : public b2ContactListener
 
         auto b = (GameObject*)contact->GetFixtureB()->GetBody()->GetUserData().pointer;
         b->willDestruct = true;
+
+        if (strcmp(a->gameObjectType, "Heroship") == 0 ||
+            strcmp(a->gameObjectType, "Hero Projectile") == 0)
+        {
+            b->willScorePoints = true;
+        }
+        else if (strcmp(b->gameObjectType, "Heroship") == 0 ||
+                 strcmp(b->gameObjectType, "Hero Projectile") == 0)
+        {
+            a->willScorePoints = true;
+        }
     }
 };
 
 //
-// Controller functions
-//
-
-void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
-{
-    if (g_heroShip == nullptr)
-        return;
-
-    // Set flags on the hero ship game object based on key presses.
-    // Update() takes care of any changes to game behavior.
-    //
-    g_heroShip->OnKeyPress(key, action);
-}
-
-void MouseMotionCallback(GLFWwindow*, double xd, double yd)
-{
-    // get the position where the mouse was pressed
-    b2Vec2 ps((float)xd, (float)yd);
-    // now convert this position to Box2D world coordinates
-    b2Vec2 pw = g_camera.ConvertScreenToWorld(ps);
-}
-
-void MouseButtonCallback(GLFWwindow* window, int32 button, int32 action, int32 mods)
-{
-    // code for mouse button keys https://www.glfw.org/docs/3.3/group__buttons.html
-    // and modifiers https://www.glfw.org/docs/3.3/group__buttons.html
-    // action is either GLFW_PRESS or GLFW_RELEASE
-    double xd, yd;
-    // get the position where the mouse was pressed
-    glfwGetCursorPos(g_mainWindow, &xd, &yd);
-    b2Vec2 ps((float)xd, (float)yd);
-    // now convert this position to Box2D world coordinates
-    b2Vec2 pw = g_camera.ConvertScreenToWorld(ps);
-}
-
-//
 // Setup and main game loop.
 //
-
 int main()
 {
     // glfw initialization things
@@ -823,7 +966,7 @@ int main()
     }
 
     g_mainWindow = glfwCreateWindow(g_camera.m_width, g_camera.m_height,
-        "Shoot: <Space Bar>, Turn: <L/R Arrows>, Accelerate: <Up Arrow>, Emergency Teleport: <Ctrl>",
+        "ASTEROIDS: using Box2D, GLFW, Dear ImGui, written in C++ by Mark Sulkowski",
         NULL, NULL);
 
     if (g_mainWindow == NULL)
@@ -854,8 +997,6 @@ int main()
     g_world->SetDebugDraw(&g_debugDraw);
     CreateUI(g_mainWindow, 20.0f /* font size in pixels */);
 
-    // Setup the world for the game.
-    //
     CreateWorldStart();
 
     // Body collision detection.
@@ -921,13 +1062,7 @@ int main()
         //
         glfwPollEvents();
 
-        // Update all of the game objects to ensure that the are acting correctly.
-        //
         UpdateGameObjects();
-
-        // Check for end of game, end of level, and destroyed spaceship, and refresh
-        // the world if needed.
-        //
         UpdateGameState();
 
         // Throttle to cap at 60 FPS. Which means if it's going to be past
@@ -956,4 +1091,70 @@ int main()
     delete g_world;
 
     return 0;
+}
+
+float GenerateRandom(float lower, float upper)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> dis(lower, upper);
+    float random_value = dis(gen);  // The loss of data from double to float is acceptable.
+    return random_value;
+}
+
+float GenerateRandomDirection()
+{
+    return GenerateRandom(0, 2 * b2_pi);  // Random direction in radians. 0 to 2*pi.
+}
+
+void MouseMotionCallback(GLFWwindow*, double xd, double yd)
+{
+    // get the position where the mouse was pressed
+    b2Vec2 ps((float)xd, (float)yd);
+    // now convert this position to Box2D world coordinates
+    b2Vec2 pw = g_camera.ConvertScreenToWorld(ps);
+}
+
+void MouseButtonCallback(GLFWwindow* window, int32 button, int32 action, int32 mods)
+{
+    // code for mouse button keys https://www.glfw.org/docs/3.3/group__buttons.html
+    // and modifiers https://www.glfw.org/docs/3.3/group__buttons.html
+    // action is either GLFW_PRESS or GLFW_RELEASE
+    double xd, yd;
+    // get the position where the mouse was pressed
+    glfwGetCursorPos(g_mainWindow, &xd, &yd);
+    b2Vec2 ps((float)xd, (float)yd);
+    // now convert this position to Box2D world coordinates
+    b2Vec2 pw = g_camera.ConvertScreenToWorld(ps);
+}
+
+//
+// Controller functions
+//
+
+void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    if (g_heroShip == nullptr)
+        return;
+
+    // Set flags on the hero ship game object based on key presses.
+    // Update() takes care of any changes to game behavior.
+    //
+    g_heroShip->OnKeyPress(key, action);
+}
+
+void UpdateTextDisplay()
+{
+    std::string displayText = "\nHigh Score: " + std::to_string(g_high_score);
+    displayText += "\nScore: " + std::to_string(g_score);
+    if (g_lives > 0)
+    {
+        displayText += "\nLives: " + std::to_string(g_lives);
+    }
+    else
+    {
+        displayText += "\nGAME OVER!";
+    }
+    displayText += "\n\nShoot: Space\nTurn: Left/Right\nThrust: Up\nTeleport: Ctrl";
+    g_debugDraw.DrawString(15, 15, displayText.c_str());
 }
