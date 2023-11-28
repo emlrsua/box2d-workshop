@@ -64,7 +64,6 @@ public:
     ~GameObject()
     {
         g_world->DestroyBody(body); // This is where the body is destroyed in the physics engine
-        std::cout << gameObjectType << " destroyed." << std::endl;
     }
 
     virtual void Update(){}; // Update game object every frame
@@ -258,6 +257,7 @@ public:
         b2FixtureDef asteroidFixture;
         asteroidFixture.shape = &asteroid_shape;
         asteroidFixture.density = 1.0f;
+        float desiredVelocity = 5.0f;
         if (sizeOfAsteroid == Size::Medium)
         {
             asteroidFixture.filter.categoryBits = CATEGORY_MEDIUM_ASTEROID;
@@ -266,18 +266,14 @@ public:
         else if (sizeOfAsteroid == Size::Small)
         {
             asteroidFixture.filter.categoryBits = CATEGORY_SMALL_ASTEROID;
+            desiredVelocity = 6.0f;
             gameObjectType = "Small Asteroid";
-        }
-        else
-        {
-            std::cout << "Illegal sized asteroid " << std::endl;
         }
         asteroidFixture.filter.maskBits = MASK_ASTEROID;
         body->CreateFixture(&asteroidFixture);
 
         // Starting asteroids have a random direction of motion
         //
-        float desiredVelocity = 4.5f;
         float angle = GenerateRandomDirection(); // Radians are based on 2*pi
         b2Vec2 directionOfMotion(cos(angle), sin(angle));
         directionOfMotion *= desiredVelocity;
@@ -337,27 +333,21 @@ private:
         {
         case 1:
             // Translate random position to correct coordinates
-            vec.Set(large - height / 2, small);
-            std::cout << "Asteroid position: " << vec.x << ", " << vec.y << ". Bottom side." << std::endl;
-            break;
+            vec.Set(large - height / 2, small);            break;
         case 2:
             // Translate random position to correct coordinates
             vec.Set(small - width / 2, large);
-            std::cout << "Asteroid position: " << vec.x << ", " << vec.y << ". Left side." << std::endl;
             break;
         case 3:
             // Translate random position to correct coordinates
             vec.Set(large - height / 2, height - small);
-            std::cout << "Asteroid position: " << vec.x << ", " << vec.y << ". Top side." << std::endl;
             break;
         case 4:
             // Translate random position to correct coordinates
             vec.Set(width / 2 - small, large);
-            std::cout << "Asteroid position: " << vec.x << ", " << vec.y << ". Right side." << std::endl;
             break;
         default:
             vec.Set(0.0f, 0.0f);
-            std::cout << "Warning: Invalid side index: " << side << std::endl;
             break;
         }
 
@@ -537,7 +527,6 @@ private:
 
     // Create the projectile
     g_gameObjects.emplace(new Projectile(launchPosition, directionOfFire));
-    std::cout << "Fire projectile! " << std::endl;
 }
 
     void RandomTeleport()
@@ -547,7 +536,6 @@ private:
     float y = GenerateRandom(0.0f, 50.0f);
     b2Vec2 newPosition(x, y);
     body->SetTransform(newPosition, body->GetAngle());
-    std::cout << "Random teleport to " << x << ", " << y << std::endl;
 }
 
     // We can't rely on the GLFW_REPEAT key event to handle smooth action when
@@ -722,7 +710,7 @@ public:
 
         WorldWrapAround();
 
-        if (g_saucer_timer % 60 == 0)
+        if (g_saucer_timer % 30 == 0)
         {
             FireSaucerProjectile();
         }
@@ -732,13 +720,10 @@ public:
     {
         if (sizeOfSaucer == Size::Medium)
         {
-            UpdateScoreAndLives(200);
-            std::cout << "Destroyed large saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
-        }
+            UpdateScoreAndLives(200);        }
         if (sizeOfSaucer == Size::Small)
         {
             UpdateScoreAndLives(1000);
-            std::cout << "Destroyed small saucer. Score: " << g_score << ", Lives: " << g_lives << std::endl;
         }
     }
 
@@ -862,21 +847,18 @@ void CheckForTransition()
         {
             // If a life was lost and one has zero lives left, it's GAME OVER!
             g_gameOver = true;
-            std::cout << "GAME OVER!" << std::endl;
             g_wait_counter = 180;
         }
         else
         {
             // If a life was lost and the player still has lives left, the next spaceship
             // is activated. There are still asteroids in the world.
-            std::cout << "NEXT HEROSHIP!" << std::endl;
             g_wait_counter = 60; // Wait one second before enabling the next life.
         }
     }
     else if (IsOnlyHeroShipLeft() && !g_board_won)
     {
         g_board_won = true;
-        std::cout << "NEXT LEVEL!" << std::endl;
         g_wait_counter = 120;
     }
 }
@@ -889,7 +871,6 @@ void RegenerateWorld()
     {
         if (g_gameOver)
         {
-            std::cout << "Handle game over" << std::endl;
             g_gameOver = false;
             if (g_score > g_high_score)
             {
@@ -901,9 +882,8 @@ void RegenerateWorld()
             ClearWorld();
             CreateWorldStart();
         }
-        else if (g_board_won) //TODO: Make sure that there is exactly one hero ship.
+        else if (g_board_won)
         {
-            std::cout << "Handle board won" << std::endl;
             g_board_won = false;
             g_large_asteroid_count++;
             ClearWorldExceptHero();
@@ -911,7 +891,6 @@ void RegenerateWorld()
         }
         else // The level was not yet complete. Need a new Spaceship for our hero!
         {
-            std::cout << "Handle MIA" << std::endl;
             g_heroShip = new Heroship();
             g_gameObjects.emplace(g_heroShip);
         }
@@ -966,7 +945,7 @@ int main()
     }
 
     g_mainWindow = glfwCreateWindow(g_camera.m_width, g_camera.m_height,
-        "ASTEROIDS: using Box2D, GLFW, Dear ImGui, written in C++ by Mark Sulkowski",
+        "ASTEROIDS: Using Box2D and written in C++ by Mark Sulkowski",
         NULL, NULL);
 
     if (g_mainWindow == NULL)
@@ -1145,8 +1124,8 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 
 void UpdateTextDisplay()
 {
-    std::string displayText = "\nHigh Score: " + std::to_string(g_high_score);
-    displayText += "\nScore: " + std::to_string(g_score);
+    std::string displayText = "Score: " + std::to_string(g_score);
+    displayText += "\nHigh Score: " + std::to_string(g_high_score);
     if (g_lives > 0)
     {
         displayText += "\nLives: " + std::to_string(g_lives);
